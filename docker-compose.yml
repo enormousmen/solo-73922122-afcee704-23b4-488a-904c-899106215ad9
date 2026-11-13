@@ -1,13 +1,35 @@
 services:
-  web:
+  web-a:
     build: .
     ports:
       - "8000:8000"
     environment:
       - DB_PATH=/data/app.db
+      - WEB_INSTANCE=A (8000)
     volumes:
       - survey-data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/uniqueness').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web-b:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      - DB_PATH=/data/app.db
+      - WEB_INSTANCE=B (8001)
+    volumes:
+      - survey-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/uniqueness').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   survey-data:

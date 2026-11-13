@@ -3,34 +3,59 @@
 {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
 
 <section>
+  <h2>唯一性约束状态
+    <a class="btn plain" style="float:right" href="/uniqueness">打开唯一性检查与启用页</a>
+  </h2>
+  {% if enabled %}
+  <p><span class="tag add">已启用</span>
+     同一样方 + 同一物种仅允许一条汇总记录（去首尾空白后精确匹配，株数不同也算重复）；
+     人工增改、整批修改与离线合并均在提交时按整批最终状态检查，重复整批拒绝并显示相关 ID。</p>
+  {% else %}
+  <p><span class="tag conf">未启用</span>
+     维护与合并暂不受唯一性约束；可到
+     <a href="/uniqueness">唯一性检查与启用页</a> 做全库检查后启用（启用前的检查为只读，不持写锁）。</p>
+  {% endif %}
+</section>
+
+<section>
   <h2>① 当前记录（共 {{ records|length }} 条）<a class="btn plain" style="float:right" href="/export.csv">导出当前 CSV</a></h2>
+  <form method="post" action="/records/batch-update">
   <table>
     <tr><th>ID</th><th>样方</th><th>物种</th><th>株数</th><th>操作</th></tr>
     {% for rid, r in records.items() %}
     <tr>
-      <form method="post" action="/records/{{ rid }}/update">
-        <td>{{ rid }}</td>
-        <td><input type="text" name="quadrat" value="{{ r.quadrat }}" required></td>
-        <td><input type="text" name="species" value="{{ r.species }}" required></td>
-        <td><input type="number" name="count" value="{{ r.count }}" min="0" step="1" required></td>
-        <td>
-          <button type="submit">保存</button>
-          <button class="danger" type="submit" form="del-{{ rid }}" onclick="return confirm('确认删除 {{ rid }}？')">删除</button>
-        </td>
-      </form>
+      <td>{{ rid }}</td>
+      <td><input type="text" name="r_{{ rid }}_quadrat" value="{{ r.quadrat }}" required></td>
+      <td><input type="text" name="r_{{ rid }}_species" value="{{ r.species }}" required></td>
+      <td><input type="number" name="r_{{ rid }}_count" value="{{ r.count }}" min="0" step="1" required></td>
+      <td>
+        <button class="plain" type="submit" name="single" value="{{ rid }}">仅保存本行</button>
+        <button class="danger" type="submit" form="del-{{ rid }}" formaction="/records/{{ rid }}/delete" formmethod="post" onclick="return confirm('确认删除 {{ rid }}？')">删除</button>
+      </td>
     </tr>
-    <form id="del-{{ rid }}" method="post" action="/records/{{ rid }}/delete"></form>
     {% endfor %}
-    <tr>
-      <form method="post" action="/records/add">
+  </table>
+  {% if records %}
+  <p style="margin-top:10px">
+    <button type="submit">整批保存全部修改（单事务，按整批最终状态检查；可同批交换两条记录的物种）</button>
+  </p>
+  {% endif %}
+  </form>
+  {% for rid in records %}
+  <form id="del-{{ rid }}" method="post" action="/records/{{ rid }}/delete"></form>
+  {% endfor %}
+
+  <form method="post" action="/records/add" style="margin-top:14px">
+    <table>
+      <tr>
         <td><input class="id" type="text" name="rid" placeholder="新ID" required></td>
         <td><input type="text" name="quadrat" placeholder="样方" required></td>
         <td><input type="text" name="species" placeholder="物种" required></td>
         <td><input type="number" name="count" min="0" step="1" value="1" required></td>
         <td><button type="submit">新增</button></td>
-      </form>
-    </tr>
-  </table>
+      </tr>
+    </table>
+  </form>
 </section>
 
 <section>

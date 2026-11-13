@@ -11,6 +11,11 @@
     {% else %}<span class="tag">已放弃</span>{% endif %}
     　生成时间：{{ pv.created_at }}</p>
   <p class="muted">确认时将重新核对本计划触及的 {{ plan.involved|length }} 条记录；若它们在预览后被改动或删除，本次确认会被拒绝并按最新当前记录重新比较；无关记录的变化不影响确认。</p>
+  {% if enabled %}
+  <p class="msg" style="margin:8px 0 0">🔒 唯一性约束已启用：确认时整批动作在同一事务内应用，并按<b>整批最终状态</b>检查
+     （样方、物种去首尾空白后精确匹配，株数不同也算重复）。若产生重复，<b>整批拒绝、记录不改变</b>，
+     本预览保持“待确认”、不会标为已应用，页面将列出相关记录 ID。启用前生成的旧预览同样受此约束。</p>
+  {% endif %}
 </section>
 
 <form method="post" action="/previews/{{ pv.token }}/confirm">

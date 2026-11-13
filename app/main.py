@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from . import db
 from .csvio import dump_csv, parse_csv
 from .merge import FIELD_LABELS, FIELDS, build_final_actions, compute_plan
+from .uniqueness import DuplicateError
 
 BASE_DIR = Path(__file__).resolve().parent
 SEED_CSV = os.environ.get("INITIAL_CSV", str(BASE_DIR.parent / "data" / "initial_records.csv"))
@@ -18,6 +19,7 @@ SEED_CSV = os.environ.get("INITIAL_CSV", str(BASE_DIR.parent / "data" / "initial
 app = FastAPI(title="植被调查离线修订合并")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["FIELD_LABELS"] = FIELD_LABELS
+templates.env.globals["WEB_INSTANCE"] = os.environ.get("WEB_INSTANCE", "")
 
 
 @app.on_event("startup")
@@ -57,6 +59,7 @@ def index(request: Request, msg: str = ""):
             "records": db.get_records(),
             "baselines": db.list_baselines(),
             "previews": db.list_previews(),
+            "enabled": db.is_enabled(),
             "msg": msg,
         },
     )
@@ -71,6 +74,8 @@ def record_add(rid: str = Form(...), quadrat: str = Form(...), species: str = Fo
             raise ValueError("ID、样方、物种均不能为空")
         db.add_record(rid, quadrat, species, n)
         return redirect("/", f"已新增记录 {rid}")
+    except DuplicateError as e:
+        return redirect("/", str(e))
     except Exception as e:
         return redirect("/", f"新增失败：{e}")
 
@@ -84,8 +89,58 @@ def record_update(rid: str, quadrat: str = Form(...), species: str = Form(...), 
         if not db.update_record(rid, quadrat.strip(), species.strip(), n):
             raise ValueError(f"记录 {rid} 不存在")
         return redirect("/", f"已更新记录 {rid}")
+    except DuplicateError as e:
+        return redirect("/", str(e))
     except Exception as e:
         return redirect("/", f"更新失败：{e}")
+
+
+@app.post("/records/batch-update")
+async def records_batch_update(request: Request):
+    """整批人工修改：单事务提交，按整批最终状态做唯一性检查。
+
+    允许同批交换两条记录的物种（中间重复、最终不重复）；
+    最终状态重复则整批拒绝、不改变任何记录，回首页展示相关 ID。
+    """
+    form = await request.form()
+    try:
+        only = form.get("single")  # “仅保存本行”：只处理该 ID
+        changes = {}
+        # 字段名形如 r_<ID>_quadrat / r_<ID>_species / r_<ID>_count；
+        # 用前缀+后缀切分，兼容 ID 本身含下划线的情况
+        for key in form:
+            if not key.startswith("r_"):
+                continue
+            for field in ("quadrat", "species", "count"):
+                suffix = f"_{field}"
+                if key.endswith(suffix):
+                    rid = key[2 : -len(suffix)]
+                    break
+            else:
+                continue
+            if only and rid != only:
+                continue
+            changes.setdefault(rid, {})[field] = form[key]
+        if not changes:
+            return redirect("/", "没有需要保存的修改")
+        normalized = {}
+        for rid, vals in changes.items():
+            if "quadrat" not in vals or "species" not in vals or "count" not in vals:
+                raise ValueError(f"记录 {rid} 的修改数据不完整")
+            quadrat, species = str(vals["quadrat"]).strip(), str(vals["species"]).strip()
+            if not quadrat or not species:
+                raise ValueError(f"记录 {rid} 的样方、物种不能为空")
+            normalized[rid] = {
+                "quadrat": quadrat,
+                "species": species,
+                "count": parse_count(vals["count"]),
+            }
+        db.batch_update_records(normalized)
+        return redirect("/", f"已整批保存 {len(normalized)} 条修改")
+    except DuplicateError as e:
+        return redirect("/", str(e))
+    except Exception as e:
+        return redirect("/", f"整批保存失败：{e}")
 
 
 @app.post("/records/{rid}/delete")
@@ -93,6 +148,42 @@ def record_delete(rid: str):
     if db.delete_record(rid):
         return redirect("/", f"已删除记录 {rid}")
     return redirect("/", f"记录 {rid} 不存在")
+
+
+# ---------------- 唯一性检查与启用 ----------------
+
+
+@app.get("/uniqueness", response_class=HTMLResponse)
+def uniqueness_page(request: Request, msg: str = ""):
+    enabled = db.is_enabled()
+    # 页面检查走只读快照：不持 SQLite 写锁，期间维护与合并照常进行
+    groups = [] if enabled else db.snapshot_duplicate_groups()
+    return templates.TemplateResponse(
+        request,
+        "uniqueness.html",
+        {
+            "request": request,
+            "enabled": enabled,
+            "enabled_at": db.enabled_at(),
+            "groups": groups,
+            "msg": msg,
+        },
+    )
+
+
+@app.post("/uniqueness/enable")
+def uniqueness_enable():
+    result = db.enable_uniqueness()
+    if result["ok"]:
+        if result["already"]:
+            return redirect("/uniqueness", "唯一性约束此前已启用，本次为重复操作，状态不变")
+        return redirect("/uniqueness", "唯一性约束已启用：此后人工增改与离线合并均按整批最终状态检查")
+    # 有重复：未启用，数据与状态均未改变
+    return redirect(
+        "/uniqueness",
+        "启用被拒绝：以下重复组必须先整理为同一样方+同一物种仅一条汇总记录，"
+        "启用状态与数据均未改变",
+    )
 
 
 # ---------------- 导出 / 基线 ----------------
@@ -173,6 +264,7 @@ def preview_detail(request: Request, token: str, msg: str = ""):
             "baseline": baseline,
             "plan": pv["plan"],
             "FIELDS": FIELDS,
+            "enabled": db.is_enabled(),
             "msg": msg,
         },
     )
@@ -224,13 +316,18 @@ async def preview_confirm(token: str, request: Request):
             if v in ("rev", "cur"):
                 resolutions[rid] = {"_": v}
 
-    # 3) 合成最终动作并单事务应用；失败则当前数据不变
+    # 3) 合成最终动作
     try:
         actions = build_final_actions(pv["plan"], resolutions)
     except ValueError as e:
         return redirect(f"/previews/{token}", str(e))
+
+    # 4) 单事务应用；启用唯一性时按整批最终状态检查，
+    #    重复则整体回滚、预览保持“待确认”，不标为已应用
     try:
         db.apply_actions(actions)
+    except DuplicateError as e:
+        return redirect(f"/previews/{token}", str(e))
     except Exception as e:
         return redirect(f"/previews/{token}", f"应用失败，当前数据未改变：{e}")
 

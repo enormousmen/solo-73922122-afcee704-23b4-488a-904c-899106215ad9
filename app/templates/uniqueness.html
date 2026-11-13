@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}唯一性检查与启用 · 植被调查离线修订合并{% endblock %}
+{% block content %}
+{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+
+<section>
+  <h2>唯一性口径与当前状态</h2>
+  <p>新口径：<b>同一样方、同一物种仅保留一条汇总记录</b>，避免重复株数进入分析。</p>
+  <ul class="muted" style="line-height:1.8">
+    <li>样方、物种分别<b>去除首尾空白后精确匹配</b>；株数不参与匹配，<b>株数不同也算重复</b>。</li>
+    <li>启用后：人工新增/修改、整批修改与离线合并，均在<b>提交时按整批最终状态</b>检查；
+        允许同批交换两条记录的物种（中间重复、最终不重复可通过）。</li>
+    <li>整批最终状态存在重复 → <b>整批拒绝、不改变任何记录</b>，并列出相关记录 ID。</li>
+    <li>启用状态保存在数据库中，服务重启后依然生效；启用前生成的旧预览在确认时同样受约束。</li>
+  </ul>
+  <p>当前状态：
+    {% if enabled %}
+      <span class="tag add">已启用</span>
+      {% if enabled_at %}　启用时间：{{ enabled_at }}{% endif %}
+    {% else %}
+      <span class="tag conf">未启用</span>
+    {% endif %}
+  </p>
+</section>
+
+{% if not enabled %}
+<section>
+  <h2>启用前全库检查（只读，不持写锁）</h2>
+  <p class="muted">本检查为只读快照，不会阻塞其他页面的维护与合并；
+     点击启用时还会以切换瞬间的完整数据在同一事务内复检，有重复则不启用，且不会留下半启用状态。</p>
+  {% if groups %}
+  {% set total_records = groups | map(attribute='ids') | map('length') | sum %}
+  <p style="color:#8c2b2b"><b>发现 {{ groups|length }} 个重复组，共 {{ total_records }} 条重复记录，当前不能启用。</b></p>
+  <table>
+    <tr><th>#</th><th>样方</th><th>物种</th><th>重复记录 ID</th><th>各自株数</th></tr>
+    {% for g in groups %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ g.quadrat }}</td>
+      <td>{{ g.species }}</td>
+      <td><b>{{ g.ids | join('、') }}</b></td>
+      <td>
+        {% for rid in g.ids %}{{ rid }}={{ g.records[rid].count }}{% if not loop.last %}；{% endif %}{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted">请先回首页把每个重复组合并为一条汇总记录（删除多余记录或修改样方/物种），再回本页启用。</p>
+  {% else %}
+  <p style="color:#226622"><b>全库检查通过：未发现重复组，可以启用。</b></p>
+  {% endif %}
+  <form method="post" action="/uniqueness/enable" style="margin-top:14px">
+    <button type="submit" {% if groups %}disabled title="存在重复组，整理后才能启用" style="opacity:.5;cursor:not-allowed"{% endif %}>
+      以当前完整数据为准，启用唯一性约束
+    </button>
+    <a class="btn plain" href="/">返回首页整理数据</a>
+  </form>
+</section>
+{% else %}
+<section>
+  <h2>启用后的执行保证</h2>
+  <table>
+    <tr><th>场景</th><th>行为</th></tr>
+    <tr><td>人工新增 / 单条修改 / 删除</td><td>提交时按最终状态检查，重复则拒绝并显示相关记录 ID，记录不变</td></tr>
+    <tr><td>整批修改（含同批交换两条记录的物种）</td><td>单事务提交，按整批最终状态检查；最终不重复即可通过</td></tr>
+    <tr><td>离线合并确认（含启用前生成的旧预览）</td><td>整批动作在同一事务内应用后复检，重复则整批回滚，预览保持“待确认”，不会标为已应用</td></tr>
+    <tr><td>两个共库 Web 进程并发操作</td><td>进程内锁 + SQLite 立即写事务串行化，任一方都无法绕过约束</td></tr>
+  </table>
+  <p style="margin-top:14px"><a class="btn" href="/">返回首页</a></p>
+</section>
+{% endif %}
+{% endblock %}

@@ -36,6 +36,8 @@
 <header>
   <h1>🌿 植被调查离线修订合并</h1>
   <a href="/">当前记录 / 合并入口</a>
+  <a href="/uniqueness">唯一性检查与启用</a>
+  {% if WEB_INSTANCE %}<span class="muted" style="color:#d9ecd9">进程：{{ WEB_INSTANCE }}</span>{% endif %}
 </header>
 <main>
 {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
